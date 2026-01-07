@@ -12,28 +12,28 @@ Original file is located at
 import streamlit as st
 import pandas as pd
 import requests
-import time
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
+from sklearn.linear_model import LinearRegression
 
-# --- Page Configuration ---
-st.set_page_config(page_title="Financial Dashboard", layout="wide")
-st.title("📊 Multi-Asset Quantitative Dashboard")
+# Page configuration
+st.set_page_config(page_title="Quantitative Research Platform", layout="wide")
+st.title("Quantitative Research Platform")
 
 API_KEY = "CW1LL675242TSYOU"
 URL = "https://www.alphavantage.co/query"
 
 @st.cache_data
 def get_data(symbol, is_crypto=False):
-    """Fetch data from Alpha Vantage API."""
+    """Fetch market data from Alpha Vantage"""
     params = {
         "function": "DIGITAL_CURRENCY_DAILY" if is_crypto else "TIME_SERIES_DAILY",
         "symbol": symbol,
         "apikey": API_KEY
     }
-    if is_crypto: params["market"] = "USD"
-
+    if is_crypto:
+        params["market"] = "USD"
     try:
         r = requests.get(URL, params=params).json()
         key = "Time Series (Digital Currency Daily)" if is_crypto else "Time Series (Daily)"
@@ -47,60 +47,111 @@ def get_data(symbol, is_crypto=False):
         return None
     return None
 
-# --- Data Loading ---
-with st.spinner("Fetching market data..."):
-    dfBTC = get_data("BTC", is_crypto=True)
-    dfGLD = get_data("GLD")
-    dfURTH = get_data("URTH")
+# Global data loading
+with st.spinner("Loading market data..."):
+    df_btc = get_data("BTC", is_crypto=True)
+    df_gld = get_data("GLD")
+    df_urth = get_data("URTH")
 
-if dfBTC is not None and dfGLD is not None and dfURTH is not None:
-    # --- Data Processing ---
-    data = pd.DataFrame({
-        "Bitcoin": dfBTC["close"],
-        "Gold": dfGLD["close"],
-        "MSCI World": dfURTH["close"]
-    }).dropna()
+if df_btc is not None:
+    tab_a, tab_b = st.tabs(["Module A: Bitcoin Strategy", "Module B: Portfolio Analysis"])
 
-    returns = data.pct_change().dropna()
+    # MODULE A: SINGLE ASSET (Full Notebook Logic)
+    with tab_a:
+        st.header("Bitcoin Quantitative Analysis")
 
-    # --- Portfolio Construction ---
-    weights = [0.33, 0.33, 0.34]
-    returns['Portfolio'] = returns.dot(weights)
-    initial_cap = 10000
-    values = (1 + returns).cumprod() * initial_cap
+        # 1. Strategy Calculation
+        df_a = df_btc.copy()
+        df_a['Daily_Return'] = df_a['close'].pct_change()
+        df_a['SMA20'] = df_a['close'].rolling(window=20).mean()
+        df_a['SMA50'] = df_a['close'].rolling(window=50).mean()
 
-    # --- Metrics Calculation ---
-    vol = returns['Portfolio'].std() * np.sqrt(252)
-    sharpe = (returns['Portfolio'].mean() / returns['Portfolio'].std()) * np.sqrt(252)
-    cum_max = values['Portfolio'].cummax()
-    drawdown = (values['Portfolio'] - cum_max) / cum_max
-    max_dd = drawdown.min()
+        # Signal and Strategy Returns
+        df_a['Signal'] = np.where(df_a['SMA20'] > df_a['SMA50'], 1, 0)
+        df_a['Momentum_Return'] = df_a['Signal'].shift(1) * df_a['Daily_Return']
 
-    # --- Dashboard UI ---
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Annualized Volatility", f"{vol:.2%}")
-    col2.metric("Sharpe Ratio", f"{sharpe:.2f}")
-    col3.metric("Max Drawdown", f"{max_dd:.2%}")
+        # Cumulative Performance
+        df_a['Cum_Buy_Hold'] = (1 + df_a['Daily_Return']).cumprod() * 10000
+        df_a['Cum_Momentum'] = (1 + df_a['Momentum_Return']).cumprod() * 10000
 
-    st.subheader("Cumulative Performance ($10,000 Base)")
-    st.line_chart(values[['Portfolio', 'Bitcoin', 'MSCI World']])
+        # 2. Performance Metrics
+        def calc_metrics(returns):
+            total_ret = (1 + returns).prod() - 1
+            vol = returns.std() * np.sqrt(252)
+            sharpe = (returns.mean() / returns.std()) * np.sqrt(252) if returns.std() != 0 else 0
+            return total_ret, vol, sharpe
 
-    st.subheader("Asset Correlations & Risk")
-    c1, c2 = st.columns(2)
+        ret_bh, vol_bh, sha_bh = calc_metrics(df_a['Daily_Return'].dropna())
+        ret_mo, vol_mo, sha_mo = calc_metrics(df_a['Momentum_Return'].dropna())
 
-    with c1:
-        fig_corr, ax_corr = plt.subplots()
-        sns.heatmap(returns[['Bitcoin', 'Gold', 'MSCI World']].corr(), annot=True, cmap='coolwarm', ax=ax_corr)
-        st.pyplot(fig_corr)
+        # Display Metrics
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("Buy & Hold Metrics")
+            st.write(f"Total Return: {ret_bh:.2%}")
+            st.write(f"Annual Volatility: {vol_bh:.2%}")
+            st.write(f"Sharpe Ratio: {sha_bh:.2f}")
+        with c2:
+            st.subheader("Momentum Strategy Metrics")
+            st.write(f"Total Return: {ret_mo:.2%}")
+            st.write(f"Annual Volatility: {vol_mo:.2%}")
+            st.write(f"Sharpe Ratio: {sha_mo:.2f}")
 
-    with c2:
-        # Diversification Benefit
-        indiv_vols = returns[['Bitcoin', 'Gold', 'MSCI World']].std() * np.sqrt(252)
-        theo_risk = sum(indiv_vols * weights)
-        diff = (1 - (vol / theo_risk)) * 100
-        st.write(f"**Individual Risk Avg:** {theo_risk:.2%}")
-        st.write(f"**Actual Portfolio Risk:** {vol:.2%}")
-        st.success(f"Diversification Benefit: {diff:.2f}% risk reduction")
+        # 3. Visualizations
+        st.subheader("Strategy Comparison")
+        st.line_chart(df_a[['Cum_Buy_Hold', 'Cum_Momentum']])
 
+        # 4. Machine Learning Bonus
+        st.subheader("Machine Learning Trend Prediction")
+        df_ml = df_a[['close']].dropna()
+        df_ml['Day'] = np.arange(len(df_ml))
+        model = LinearRegression().fit(df_ml[['Day']], df_ml['close'])
+        prediction = model.predict([[len(df_ml)]])[0]
+        st.metric("Linear Regression Prediction (Next Day)", f"${prediction:,.2f}")
+
+    # MODULE B: MULTI-ASSET (Full Notebook Logic)
+    with tab_b:
+        if df_gld is not None and df_urth is not None:
+            st.header("Portfolio Diversification Analysis")
+
+            combined = pd.DataFrame({
+                "Bitcoin": df_btc["close"],
+                "Gold": df_gld["close"],
+                "MSCI World": df_urth["close"]
+            }).dropna()
+
+            returns_b = combined.pct_change().dropna()
+            weights = [0.33, 0.33, 0.34]
+            returns_b['Portfolio'] = returns_b.dot(weights)
+            portfolio_values = (1 + returns_b).cumprod() * 10000
+
+            # Risk and Drawdown
+            p_vol = returns_b['Portfolio'].std() * np.sqrt(252)
+            p_sharpe = (returns_b['Portfolio'].mean() / returns_b['Portfolio'].std()) * np.sqrt(252)
+            peak = portfolio_values['Portfolio'].cummax()
+            mdd = ((portfolio_values['Portfolio'] - peak) / peak).min()
+
+            met1, met2, met3 = st.columns(3)
+            met1.metric("Portfolio Volatility", f"{p_vol:.2%}")
+            met2.metric("Sharpe Ratio", f"{p_sharpe:.2f}")
+            met3.metric("Max Drawdown", f"{mdd:.2%}")
+
+            st.line_chart(portfolio_values[['Portfolio', 'Bitcoin', 'MSCI World']])
+
+            # Correlation and Diversification Gain
+            col_corr, col_gain = st.columns(2)
+            with col_corr:
+                fig_b, ax_b = plt.subplots()
+                sns.heatmap(returns_b[['Bitcoin', 'Gold', 'MSCI World']].corr(), annot=True, cmap='coolwarm', ax=ax_b)
+                st.pyplot(fig_b)
+            with col_gain:
+                indiv_vols = returns_b[['Bitcoin', 'Gold', 'MSCI World']].std() * np.sqrt(252)
+                theo_risk = sum(indiv_vols * weights)
+                gain = (1 - (p_vol / theo_risk)) * 100
+                st.write(f"Theoretical risk (No diversification): {theo_risk:.2%}")
+                st.write(f"Actual portfolio risk: {p_vol:.2%}")
+                st.success(f"Diversification Gain: {gain:.2f}% risk reduction")
+        else:
+            st.warning("Data for Gold or MSCI World is unavailable.")
 else:
-    st.error("API Limit reached or Connection Error. Please wait a minute and refresh.")
+    st.error("Could not retrieve Bitcoin data. Check API limits.")
