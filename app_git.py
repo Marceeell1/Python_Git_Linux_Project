@@ -10,34 +10,31 @@ from sklearn.metrics import mean_absolute_error
 
 # Page Configuration
 st.set_page_config(page_title="Quantitative Research Platform", layout="wide")
-st.title("Quantitative Research Platform (Professional Version)")
+st.title("Quantitative Research Platform (Full Integrated Version)")
 
 API_KEY = "CW1LL675242TSYOU"
 URL = "https://www.alphavantage.co/query"
 
-# --- SIDEBAR PARAMETERS (For User Interactivity) ---
+# --- SIDEBAR PARAMETERS ---
 st.sidebar.header("Strategy Parameters")
 
-# Parameters for Module A
 st.sidebar.subheader("Module A: Momentum Settings")
 ma_fast = st.sidebar.slider("Fast Moving Average (Days)", 5, 50, 20)
 ma_slow = st.sidebar.slider("Slow Moving Average (Days)", 51, 200, 50)
 
-# Parameters for Module B
 st.sidebar.subheader("Module B: Portfolio Weights")
-st.sidebar.info("Total must equal 100%")
 w_btc = st.sidebar.slider("Bitcoin Weight (%)", 0, 100, 33)
 w_gld = st.sidebar.slider("Gold Weight (%)", 0, 100, 33)
 w_urth = st.sidebar.slider("MSCI World Weight (%)", 0, 100, 34)
 
 total_weight = w_btc + w_gld + w_urth
 if total_weight != 100:
-    st.sidebar.error(f"Total Weight: {total_weight}% (Please adjust to 100%)")
+    st.sidebar.error(f"Total Weight: {total_weight}% (Adjust to 100%)")
 
-# --- DATA FETCHING FUNCTION WITH CACHE ---
+# --- DATA FETCHING ---
 @st.cache_data(ttl=3600)
 def get_data(symbol, is_crypto=False):
-    time.sleep(1.1) # Security delay to respect API limits
+    time.sleep(1.1)
     params = {
         "function": "DIGITAL_CURRENCY_DAILY" if is_crypto else "TIME_SERIES_DAILY",
         "symbol": symbol,
@@ -61,104 +58,124 @@ def get_data(symbol, is_crypto=False):
         return None
     return None
 
-# Initial Data Loading
-with st.spinner("Accessing financial data..."):
+# Load Data
+with st.spinner("Loading data..."):
     df_btc = get_data("BTC", is_crypto=True)
     df_gld = get_data("GLD")
     df_urth = get_data("URTH")
 
-# --- CORRECTED ERROR CHECKING (Fixes the ValueError) ---
-# We check if any return value is the string "LIMIT"
+# API Limit Check
 is_limit = any(isinstance(x, str) and x == "LIMIT" for x in [df_btc, df_gld, df_urth])
-
 if is_limit:
-    st.error("API Limit reached. The Alpha Vantage free tier allows 5 requests per minute. Please wait 60 seconds.")
+    st.error("API Limit reached (5 requests/min). Please wait 60 seconds.")
     st.stop()
 
 if df_btc is not None:
-    tab_a, tab_b = st.tabs(["Module A: Single Asset Analysis", "Module B: Portfolio Analysis"])
+    tab_a, tab_b = st.tabs(["Module A: Bitcoin Analysis", "Module B: Portfolio Analysis"])
 
-    # --- MODULE A: BITCOIN ANALYSIS ---
+    # --- MODULE A ---
     with tab_a:
-        st.header(f"Bitcoin Strategy: MA{ma_fast} vs MA{ma_slow}")
+        st.header(f"Bitcoin Strategy Analysis (MA{ma_fast}/{ma_slow})")
         df_a = df_btc.copy()
         
-        # Performance Calculations
+        # Calculations
         df_a['Returns'] = df_a['close'].pct_change()
-        df_a['MA_Fast'] = df_a['close'].rolling(window=ma_fast).mean()
-        df_a['MA_Slow'] = df_a['close'].rolling(window=ma_slow).mean()
-        df_a['Signal'] = (df_a['MA_Fast'] > df_a['MA_Slow']).astype(int)
+        df_a['MA_F'] = df_a['close'].rolling(window=ma_fast).mean()
+        df_a['MA_S'] = df_a['close'].rolling(window=ma_slow).mean()
+        df_a['Signal'] = (df_a['MA_F'] > df_a['MA_S']).astype(int)
         df_a['Position'] = df_a['Signal'].shift(1).fillna(0)
-        df_a['Strategy_Returns'] = (df_a['Position'] * df_a['Returns']).fillna(0)
+        df_a['Strat_Ret'] = df_a['Position'] * df_a['Returns']
         
-        # Cumulative performance
-        df_a['Equity_Strategy'] = (1 + df_a['Strategy_Returns']).cumprod() * 10000
-        df_a['Equity_BH'] = (df_a['close'] / df_a['close'].iloc[0]) * 10000
+        # Performance Metrics
+        bh_perf = (df_a['close'].iloc[-1] / df_a['close'].iloc[0]) - 1
+        st_perf = (1 + df_a['Strat_Ret'].fillna(0)).prod() - 1
+        sharpe = (df_a['Strat_Ret'].mean() / df_a['Strat_Ret'].std()) * np.sqrt(252)
+        equity = (1 + df_a['Strat_Ret'].fillna(0)).cumprod()
+        max_dd = ((equity - equity.cummax()) / equity.cummax()).min()
 
-        # Metrics display
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Sharpe Ratio", f"{(df_a['Strategy_Returns'].mean() / df_a['Strategy_Returns'].std() * np.sqrt(252)):.2f}")
-        m2.metric("Max Drawdown", f"{((df_a['Equity_Strategy'] - df_a['Equity_Strategy'].cummax()) / df_a['Equity_Strategy'].cummax()).min():.2%}")
-        m3.metric("Final Portfolio Value", f"${df_a['Equity_Strategy'].iloc[-1]:,.0f}")
-        m4.metric("Buy & Hold Value", f"${df_a['Equity_BH'].iloc[-1]:,.0f}")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Buy & Hold", f"{bh_perf:.2%}")
+        col2.metric("Strategy", f"{st_perf:.2%}")
+        col3.metric("Sharpe Ratio", f"{sharpe:.2f}")
+        col4.metric("Max Drawdown", f"{max_dd:.2%}")
 
-        # Signal Chart
-        fig_sig, ax_sig = plt.subplots(figsize=(12, 5))
-        ax_sig.plot(df_a.index, df_a['close'], label="Price", alpha=0.3)
-        ax_sig.plot(df_a.index, df_a['MA_Fast'], label=f"MA{ma_fast}")
-        ax_sig.plot(df_a.index, df_a['MA_Slow'], label=f"MA{ma_slow}")
-        st.pyplot(fig_sig)
+        # Plot 1: Price + MAs + Buy/Sell Markers
+        st.subheader("1. Momentum Signals (Buy/Sell)")
+        fig1, ax1 = plt.subplots(figsize=(12, 5))
+        ax1.plot(df_a.index, df_a['close'], label="Price", alpha=0.3)
+        ax1.plot(df_a.index, df_a['MA_F'], label=f"MA{ma_fast}")
+        ax1.plot(df_a.index, df_a['MA_S'], label=f"MA{ma_slow}")
+        buy = df_a[(df_a['Signal'] == 1) & (df_a['Signal'].shift(1) == 0)]
+        sell = df_a[(df_a['Signal'] == 0) & (df_a['Signal'].shift(1) == 1)]
+        ax1.scatter(buy.index, buy['close'], marker="^", color="green", s=100, label="Buy")
+        ax1.scatter(sell.index, sell['close'], marker="v", color="red", s=100, label="Sell")
+        ax1.legend()
+        st.pyplot(fig1)
 
-        # Machine Learning Bonus
+        # Plot 2: Performance Comparison
+        st.subheader("2. Cumulative Performance ($10k base)")
+        comp_df = pd.DataFrame({
+            "Buy & Hold": (df_a['close'] / df_a['close'].iloc[0]) * 10000,
+            "Strategy": equity * 10000
+        })
+        st.line_chart(comp_df)
+
+        # Plot 3: Dual Axis (Price vs Equity)
+        st.subheader("3. BTC Price vs Strategy Equity (Dual Axis)")
+        fig3, ax_p = plt.subplots(figsize=(12, 5))
+        ax_p.plot(df_a.index, df_a['close'], color="blue", label="BTC Price")
+        ax_p.set_ylabel("BTC Price (USD)", color="blue")
+        ax_e = ax_p.twinx()
+        ax_e.plot(df_a.index, equity * 10000, color="orange", label="Strategy Equity")
+        ax_e.set_ylabel("Strategy Value (USD)", color="orange")
+        plt.title("BTC Price (Left) vs Strategy Value (Right)")
+        st.pyplot(fig3)
+
+        # ML Section
         st.divider()
-        st.subheader("Predictive Modeling (Linear Regression)")
+        st.header("Linear Regression & Forecasting")
         df_ml = df_a[['close']].dropna()
         df_ml['T'] = np.arange(len(df_ml))
         model = LinearRegression().fit(df_ml[['T']], df_ml['close'])
-        mae = mean_absolute_error(df_ml['close'], model.predict(df_ml[['T']]))
-        st.info(f"Mean Absolute Error (MAE): ${mae:,.2f}")
+        df_ml['Pred'] = model.predict(df_ml[['T']])
         
-        # 10-day forecast
+        # Plot 4: ML Prediction
+        fig4, ax4 = plt.subplots(figsize=(12, 5))
+        ax4.plot(df_ml.index, df_ml['close'], label="Actual")
+        ax4.plot(df_ml.index, df_ml['Pred'], label="Predicted", linestyle="--")
+        ax4.legend()
+        st.pyplot(fig4)
+        
+        mae = mean_absolute_error(df_ml['close'], df_ml['Pred'])
+        st.write(f"Mean Absolute Error (MAE): **${mae:,.2f}**")
+        
+        # Forecast Table
         fut = np.array([[len(df_ml) + i] for i in range(1, 11)])
-        st.table(pd.DataFrame({"Forecast Day": [f"Day +{i}" for i in range(1, 11)], "Price": model.predict(fut)}))
+        forecast = pd.DataFrame({"Day": [f"Day +{i}" for i in range(1, 11)], "Predicted Price": model.predict(fut)})
+        st.table(forecast)
 
-    # --- MODULE B: PORTFOLIO ANALYSIS ---
+    # --- MODULE B ---
     with tab_b:
         if df_gld is not None and df_urth is not None:
-            st.header("Multi-Asset Portfolio Simulation")
+            st.header("Portfolio Diversification")
+            combined = pd.DataFrame({"Bitcoin": df_btc["close"], "Gold": df_gld["close"], "MSCI World": df_urth["close"]}).dropna()
+            rets = combined.pct_change().dropna()
+            w = np.array([w_btc/100, w_gld/100, w_urth/100])
+            rets['Portfolio'] = rets.dot(w)
             
-            combined = pd.DataFrame({
-                "Bitcoin": df_btc["close"],
-                "Gold": df_gld["close"],
-                "MSCI World": df_urth["close"]
-            }).dropna()
+            st.subheader("Asset Comparison (Base 100)")
+            st.line_chart((1 + rets).cumprod() * 100)
             
-            # Apply user weights from sidebar
-            weights = np.array([w_btc/100, w_gld/100, w_urth/100])
-            returns = combined.pct_change().dropna()
-            returns['Portfolio'] = returns.dot(weights)
-            
-            # Growth Chart
-            st.subheader("Performance Comparison (Base $10,000)")
-            st.line_chart((1 + returns).cumprod() * 10000)
-            
-            # Diversification Metrics
-            vol_p = returns['Portfolio'].std() * np.sqrt(252)
-            theoretical_v = np.sum(returns[['Bitcoin', 'Gold', 'MSCI World']].std() * np.sqrt(252) * weights)
-            reduction = (1 - (vol_p / theoretical_v)) * 100 if theoretical_v > 0 else 0
+            vol = rets['Portfolio'].std() * np.sqrt(252)
+            theo_v = np.sum(rets[['Bitcoin', 'Gold', 'MSCI World']].std() * np.sqrt(252) * w)
+            red = (1 - (vol / theo_v)) * 100 if theo_v > 0 else 0
             
             c1, c2, c3 = st.columns(3)
-            c1.metric("Annualized Volatility", f"{vol_p:.2%}")
-            c2.metric("Risk Reduction", f"{reduction:.2f}%")
-            c3.metric("Daily Variance", f"{returns['Portfolio'].var():.6f}")
+            c1.metric("Annual Volatility", f"{vol:.2%}")
+            c2.metric("Risk Reduction", f"{red:.2f}%")
+            c3.metric("Daily Variance", f"{rets['Portfolio'].var():.6f}")
 
-            # Correlation matrix
-            st.subheader("Asset Correlation Matrix")
+            st.subheader("Correlation Heatmap")
             fig_corr, ax_corr = plt.subplots()
-            sns.heatmap(returns[['Bitcoin', 'Gold', 'MSCI World']].corr(), annot=True, cmap='coolwarm', ax=ax_corr)
+            sns.heatmap(rets[['Bitcoin', 'Gold', 'MSCI World']].corr(), annot=True, cmap='coolwarm', ax=ax_corr)
             st.pyplot(fig_corr)
-        else:
-            st.warning("Additional assets are loading or unavailable. Check API limit.")
-
-else:
-    st.error("Unable to load Bitcoin data. Please check your internet connection and API Key.")
